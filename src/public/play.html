@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Breaker</title>
+  <style>
+    :root {
+      --bg: #f4f1ea; --panel: #fffdf8; --ink: #1d1b16; --muted: #6f6a5e;
+      --line: #ddd6c6; --accent: #2f6f4f; --bull: #2f8f5b; --cow: #d49a1f; --bad: #b5452f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16150f; --panel: #201e17; --ink: #efeadc; --muted: #9c9584;
+        --line: #37332a; --accent: #6fc196; --bull: #4fc184; --cow: #e8b545; --bad: #e0745c;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 32px 16px; background: var(--bg); color: var(--ink);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 520px; margin: 0 auto; }
+    h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.02em; }
+    .lede { color: var(--muted); margin: 0 0 24px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; padding: 20px; margin-bottom: 16px;
+    }
+    form { display: flex; gap: 8px; }
+    input {
+      flex: 1; min-width: 0; font: 600 24px/1 ui-monospace, Consolas, monospace;
+      letter-spacing: 0.4em; text-align: center; padding: 12px;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink);
+    }
+    input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button {
+      font: 600 15px system-ui, sans-serif; padding: 0 18px; border: 0; border-radius: 8px;
+      background: var(--accent); color: var(--panel); cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .status { min-height: 24px; margin: 12px 0 0; font-weight: 500; }
+    .status.error { color: var(--bad); }
+    .status.won { color: var(--bull); }
+    .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+    ol { list-style: none; margin: 0; padding: 0; }
+    .row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0; border-top: 1px solid var(--line);
+    }
+    .row:first-child { border-top: 0; }
+    .code { font: 600 20px ui-monospace, Consolas, monospace; letter-spacing: 0.3em; }
+    .pips { display: flex; gap: 4px; }
+    .pip { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); }
+    .pip.bull { background: var(--bull); border-color: var(--bull); }
+    .pip.cow { background: var(--cow); border-color: var(--cow); }
+    .legend { display: flex; gap: 16px; font-size: 14px; color: var(--muted); }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .hint { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+    h2 { font-size: 16px; margin: 0 0 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 500; border-top: 0; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .empty { color: var(--muted); font-size: 14px; margin: 0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Code Breaker</h1>
+  <p class="lede">Crack the secret 4-digit code (no repeated digits) in 10 tries or fewer.</p>
+
+  <section class="panel">
+    <form id="guess-form" autocomplete="off">
+      <input id="guess" inputmode="numeric" maxlength="4" placeholder="····" aria-label="Your guess">
+      <button id="submit">Guess</button>
+    </form>
+    <p id="status" class="status"></p>
+    <div class="legend">
+      <span><i class="pip bull"></i> right digit, right place</span>
+      <span><i class="pip cow"></i> right digit, wrong place</span>
+    </div>
+    <p class="hint">Dots are a count, not positions: greens always come first.</p>
+  </section>
+
+  <section class="panel">
+    <div class="meta"><span id="player"></span><span id="left"></span></div>
+    <ol id="history"></ol>
+    <p id="no-history" class="empty">No guesses yet.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Leaderboard</h2>
+    <table id="board" hidden>
+      <thead><tr><th>#</th><th>Name</th><th class="num">Tries</th><th class="num">Time</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="no-board" class="empty">Nobody has cracked a code yet. Be the first.</p>
+  </section>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let game = null;
+
+  async function api(method, path, body) {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    return data;
+  }
+
+  function setStatus(text, kind = '') {
+    $('status').textContent = text;
+    $('status').className = 'status ' + kind;
+  }
+
+  async function newGame() {
+    let name = '';
+    try { name = localStorage.getItem('codebreaker-name') || ''; } catch {}
+    if (!name) {
+      name = (prompt('Your name for the leaderboard?') || '').trim();
+      try { if (name) localStorage.setItem('codebreaker-name', name); } catch {}
+    }
+    game = await api('POST', '/game', { name });
+    setStatus('');
+    $('submit').textContent = 'Guess';
+    $('guess').disabled = false;
+    render();
+    $('guess').focus();
+  }
+
+  function render() {
+    $('player').textContent = 'Player: ' + game.name;
+    $('left').textContent = game.attemptsLeft + ' tries left';
+    const list = $('history');
+    list.replaceChildren(...game.attempts.map((a) => {
+      const li = document.createElement('li');
+      li.className = 'row';
+      const code = document.createElement('span');
+      code.className = 'code';
+      code.textContent = a.guess;
+      const pips = document.createElement('span');
+      pips.className = 'pips';
+      pips.setAttribute('aria-label', `${a.bulls} bulls, ${a.cows} cows`);
+      for (let i = 0; i < game.codeLength; i++) {
+        const pip = document.createElement('i');
+        pip.className = 'pip' + (i < a.bulls ? ' bull' : i < a.bulls + a.cows ? ' cow' : '');
+        pips.append(pip);
+      }
+      li.append(code, pips);
+      return li;
+    }));
+    $('no-history').hidden = game.attempts.length > 0;
+  }
+
+  async function loadBoard() {
+    const { leaderboard } = await api('GET', '/leaderboard');
+    $('board').hidden = leaderboard.length === 0;
+    $('no-board').hidden = leaderboard.length > 0;
+    $('board').tBodies[0].replaceChildren(...leaderboard.map((e, i) => {
+      const tr = document.createElement('tr');
+      for (const [text, cls] of [[i + 1], [e.name], [e.attempts, 'num'], [(e.timeMs / 1000).toFixed(1) + 's', 'num']]) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        if (cls) td.className = cls;
+        tr.append(td);
+      }
+      return tr;
+    }));
+  }
+
+  $('guess-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (game.status !== 'playing') return newGame();
+    const input = $('guess');
+    try {
+      game = await api('POST', `/game/${game.id}/guess`, { guess: input.value });
+      input.value = '';
+      render();
+      if (game.status === 'won') {
+        setStatus(`Cracked it in ${game.attempts.length}! The code was ${game.secret}.`, 'won');
+        loadBoard();
+      } else if (game.status === 'lost') {
+        setStatus(`Out of tries. The code was ${game.secret}.`, 'error');
+      } else {
+        setStatus('');
+      }
+      if (game.status !== 'playing') {
+        input.disabled = true;
+        $('submit').textContent = 'Play again';
+        $('submit').focus();
+      }
+    } catch (err) {
+      setStatus(err.message, 'error');
+      input.select();
+    }
+  });
+
+  $('guess').addEventListener('input', (e) => {
+    e.target.value = e.target.value.replace(/\D/g, '');
+  });
+
+  newGame().catch((err) => setStatus(err.message, 'error'));
+  loadBoard().catch(() => {});
+</script>
+</body>
+</html>
